@@ -1,0 +1,201 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"childIndexes" : 
+					[
+						1
+					],
+					"jsonFile" : "directory-.-Release-f5ebdc15457944623624.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "2.8"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7,
+						8,
+						9,
+						10,
+						11,
+						12
+					]
+				},
+				{
+					"build" : "Thirdparty/g2o",
+					"jsonFile" : "directory-Thirdparty.g2o-Release-96235f76f9ee371af9b8.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "2.6"
+					},
+					"parentIndex" : 0,
+					"projectIndex" : 1,
+					"source" : "Thirdparty/g2o",
+					"targetIndexes" : 
+					[
+						1
+					]
+				}
+			],
+			"name" : "Release",
+			"projects" : 
+			[
+				{
+					"childIndexes" : 
+					[
+						1
+					],
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "ORB_SLAM3",
+					"targetIndexes" : 
+					[
+						0,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7,
+						8,
+						9,
+						10,
+						11,
+						12
+					]
+				},
+				{
+					"directoryIndexes" : 
+					[
+						1
+					],
+					"name" : "g2o",
+					"parentIndex" : 0,
+					"targetIndexes" : 
+					[
+						1
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "ORB_SLAM3::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ORB_SLAM3-Release-665e86d6076d89500edd.json",
+					"name" : "ORB_SLAM3",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 1,
+					"id" : "g2o::@f8c4e7b936044c71b29a",
+					"jsonFile" : "target-g2o-Release-b911b81951eecdffdd00.json",
+					"name" : "g2o",
+					"projectIndex" : 1
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "mono_euroc::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-mono_euroc-Release-d29c4f1502cd95c6a909.json",
+					"name" : "mono_euroc",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "mono_inertial_euroc::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-mono_inertial_euroc-Release-63a33caaf4f414e7480c.json",
+					"name" : "mono_inertial_euroc",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "mono_inertial_tum_vi::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-mono_inertial_tum_vi-Release-8994b18db602e07c8a65.json",
+					"name" : "mono_inertial_tum_vi",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "mono_kitti::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-mono_kitti-Release-78a2b4adc85846c49c96.json",
+					"name" : "mono_kitti",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "mono_tum::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-mono_tum-Release-a91b543e0a3f5db624cc.json",
+					"name" : "mono_tum",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "mono_tum_vi::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-mono_tum_vi-Release-be3eb7f838b6bc061ff4.json",
+					"name" : "mono_tum_vi",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "stereo_euroc::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-stereo_euroc-Release-7e1189ed44c9a7dbbc37.json",
+					"name" : "stereo_euroc",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "stereo_inertial_euroc::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-stereo_inertial_euroc-Release-bcfc0795eaff39f37fdd.json",
+					"name" : "stereo_inertial_euroc",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "stereo_inertial_tum_vi::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-stereo_inertial_tum_vi-Release-5dabd199c1b1acabebbd.json",
+					"name" : "stereo_inertial_tum_vi",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "stereo_kitti::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-stereo_kitti-Release-354767565abe36a2e5c9.json",
+					"name" : "stereo_kitti",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "stereo_tum_vi::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-stereo_tum_vi-Release-4957b106aa6f92cea46d.json",
+					"name" : "stereo_tum_vi",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "/home/zxy/myProjects/Anchor_SLAM/cmake-build-release",
+		"source" : "/home/zxy/myProjects/Anchor_SLAM"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 6
+	}
+}
