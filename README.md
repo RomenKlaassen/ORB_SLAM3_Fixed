@@ -40,6 +40,11 @@ https://github.com/fishmarch/ORB_SLAM3_Fixed/blob/5a0b298d72f54657e11b5fbd71d39d
 
 These map points should matched already, and some matching parameters may be not computed.
 
+#### PreSave
+
+https://github.com/fishmarch/ORB_SLAM3_Fixed/blob/beb05baccd018cbaf63d5d429f952250def7f67b/src/Map.cc#L394-L403
+The original codes may invalidate the iterator because of deleting bad map points.
+
 
 
 
