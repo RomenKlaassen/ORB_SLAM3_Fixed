@@ -34,9 +34,11 @@ Only computed scores for keyframes in which the number of common words is larger
 
 https://github.com/fishmarch/ORB_SLAM3_Fixed/blob/35c2361f82f32b320150a254e1627bcedc455df6/src/KeyFrameDatabase.cc#L687-L691
 
+#### SearchByProjection
 
+https://github.com/fishmarch/ORB_SLAM3_Fixed/blob/5a0b298d72f54657e11b5fbd71d39dfe14612482/src/ORBmatcher.cc#L53-L54
 
-
+These map points should matched already, and some matching parameters may be not computed.
 
 
 
