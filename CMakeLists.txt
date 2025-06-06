@@ -43,6 +43,8 @@ MESSAGE(${OpenCV_VERSION})
 find_package(Eigen3 3.1.0 REQUIRED)
 find_package(Pangolin REQUIRED)
 find_package(realsense2)
+find_package(yaml-cpp REQUIRED)
+
 
 include_directories(
         ${PROJECT_SOURCE_DIR}
@@ -161,6 +163,13 @@ if(realsense2_FOUND)
    add_executable(rgbd_inertial_realsense_D435i
            Examples/RGB-D-Inertial/rgbd_inertial_realsense_D435i.cc)
    target_link_libraries(rgbd_inertial_realsense_D435i ${PROJECT_NAME})
+
+   add_executable(rgbd_inertial_realsense_D455
+           Examples/RGB-D-Inertial/rgbd_inertial_realsense_D455.cc)
+   target_link_libraries(rgbd_inertial_realsense_D455 ${PROJECT_NAME})
+
+   target_link_libraries(rgbd_inertial_realsense_D455 yaml-cpp)
+   
 endif()
 
 #Stereo examples
