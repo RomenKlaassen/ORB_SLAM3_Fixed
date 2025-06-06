@@ -8,27 +8,48 @@ File.version: "1.0"
 Camera.type: "PinHole"
 
 # Camera calibration and distortion parameters (OpenCV)
-Camera1.fx: 387.2641
-Camera1.fy: 386.7640
-Camera1.cx: 321.6497
-Camera1.cy: 245.4615
+
+###### 640 x 360 ###### <--------- BEST SO FAR
+Camera.width: 640
+Camera.height: 360
+Camera.fps: 60
+
+Camera1.fx: 322.720092773438
+Camera1.fy: 322.303375244141
+Camera1.cx: 321.374755859375
+Camera1.cy: 184.551208496094
+
+###### 640 x 480 ######
+# Camera.width: 640
+# Camera.height: 480
+# Camera.fps: 60
+
+# Camera1.fx: 387.2641
+# Camera1.fy: 386.7640
+# Camera1.cx: 321.6497
+# Camera1.cy: 245.4615
+
+###### 1280 x 720 ######
+# Camera.width: 1280
+# Camera.height: 720
+# Camera.fps: 90
+
+# Camera1.fx: 645.440185546875
+# Camera1.fy: 644.606750488281
+# Camera1.cx: 642.74951171875
+# Camera1.cy: 369.102416992188
 
 # distortion parameters
 # Camera1.k1: 0.0
 # Camera1.k2: 0.0
 # Camera1.p1: 0.0
 # Camera1.p2: 0.0
+
 Camera1.k1: -0.055111
 Camera1.k2: 0.063311
+
 Camera1.p1: -0.00003511
 Camera1.p2: 0.00075282
-
-# Camera resolution
-Camera.width: 640
-Camera.height: 480
-
-# Camera frames per second 
-Camera.fps: 60
 
 # Color order of the images (0: BGR, 1: RGB. It is ignored if images are grayscale)
 Camera.RGB: 1
@@ -59,7 +80,7 @@ IMU.NoiseGyro: 1e-2 # 3 # 2.44e-4 #1e-3 # rad/s^0.5
 IMU.NoiseAcc: 1e-1 #2 # 1.47e-3 #1e-2 # m/s^1.5
 IMU.GyroWalk: 1e-6 # rad/s^1.5
 IMU.AccWalk: 1e-4 # m/s^2.5
-IMU.Frequency: 200.0
+IMU.Frequency: 400.0
 
 #--------------------------------------------------------------------------------------------
 # ORB Parameters
