@@ -23,90 +23,196 @@
 #include <list>
 #include <opencv2/opencv.hpp>
 
+#include <cuda.h>
+#include <cuda_runtime.h>
+
+#define INIT_IMAGE_W 752
+#define INIT_IMAGE_H 480
+
+#define PATCH_SIZE 31
+#define HALF_PATCH_SIZE 15
+#define EDGE_THRESHOLD 19
+
+#define KW 7
+#define KH 7
+#define SIGMA 2
+
 
 namespace ORB_SLAM3
 {
 
-class ExtractorNode
-{
-public:
-    ExtractorNode():bNoMore(false){}
+    struct GpuPoint {
+        uint x;
+        uint y;
+        uint score;
+        int octave;
+        float angle;
+        float size;
+        int clust_assn;
+        uchar descriptor[32];
+    };
 
-    void DivideNode(ExtractorNode &n1, ExtractorNode &n2, ExtractorNode &n3, ExtractorNode &n4);
+    struct copyPyrimid_t
+    {
+        int nlevels;
+        uchar *outputImages;
+        int cols;
+        int rows;
+        float *mvScaleFactor;
+        cv::Mat *mvImagePyramid;
+    };
 
-    std::vector<cv::KeyPoint> vKeys;
-    cv::Point2i UL, UR, BL, BR;
-    std::list<ExtractorNode>::iterator lit;
-    bool bNoMore;
-};
+    struct OrbKeyPoint {
+        cv::KeyPoint point;
+        uchar *descriptor;
+    };
 
-class ORBextractor
-{
-public:
-    
-    enum {HARRIS_SCORE=0, FAST_SCORE=1 };
+    class ExtractorNode
+    {
+    public:
+        ExtractorNode():bNoMore(false){}
 
-    ORBextractor(int nfeatures, float scaleFactor, int nlevels,
-                 int iniThFAST, int minThFAST);
+        void DivideNode(ExtractorNode &n1, ExtractorNode &n2, ExtractorNode &n3, ExtractorNode &n4);
 
-    ~ORBextractor(){}
+        std::vector<OrbKeyPoint> vKeys;
+        cv::Point2i UL, UR, BL, BR;
+        std::list<ExtractorNode>::iterator lit;
+        bool bNoMore;
+    };
 
-    // Compute the ORB features and descriptors on an image.
-    // ORB are dispersed on the image using an octree.
-    // Mask is ignored in the current implementation.
-    int operator()( cv::InputArray _image, cv::InputArray _mask,
-                    std::vector<cv::KeyPoint>& _keypoints,
-                    cv::OutputArray _descriptors, std::vector<int> &vLappingArea);
+    class ORBextractor
+    {
+    public:
 
-    int inline GetLevels(){
-        return nlevels;}
+        enum {HARRIS_SCORE=0, FAST_SCORE=1 };
 
-    float inline GetScaleFactor(){
-        return scaleFactor;}
+        ORBextractor(int nfeatures, float scaleFactor, int nlevels,
+                     int iniThFAST, int minThFAST);
 
-    std::vector<float> inline GetScaleFactors(){
-        return mvScaleFactor;
-    }
+        ~ORBextractor();
 
-    std::vector<float> inline GetInverseScaleFactors(){
-        return mvInvScaleFactor;
-    }
+        // Compute the ORB features and descriptors on an image.
+        // ORB are dispersed on the image using an octree.
+        // Mask is ignored in the current implementation.
+        int operator()( cv::InputArray _image, cv::InputArray _mask,
+                        std::vector<cv::KeyPoint>& _keypoints,
+                        cv::OutputArray _descriptors, std::vector<int> &vLappingArea);
 
-    std::vector<float> inline GetScaleSigmaSquares(){
-        return mvLevelSigma2;
-    }
+        int inline GetLevels(){
+            return nlevels;}
 
-    std::vector<float> inline GetInverseScaleSigmaSquares(){
-        return mvInvLevelSigma2;
-    }
+        float inline GetScaleFactor(){
+            return scaleFactor;}
 
-    std::vector<cv::Mat> mvImagePyramid;
+        std::vector<float> inline GetScaleFactors(){
+            return mvScaleFactor;
+        }
 
-protected:
+        std::vector<float> inline GetInverseScaleFactors(){
+            return mvInvScaleFactor;
+        }
 
-    void ComputePyramid(cv::Mat image);
-    void ComputeKeyPointsOctTree(std::vector<std::vector<cv::KeyPoint> >& allKeypoints);    
-    std::vector<cv::KeyPoint> DistributeOctTree(const std::vector<cv::KeyPoint>& vToDistributeKeys, const int &minX,
-                                           const int &maxX, const int &minY, const int &maxY, const int &nFeatures, const int &level);
+        std::vector<float> inline GetScaleSigmaSquares(){
+            return mvLevelSigma2;
+        }
 
-    void ComputeKeyPointsOld(std::vector<std::vector<cv::KeyPoint> >& allKeypoints);
-    std::vector<cv::Point> pattern;
+        std::vector<float> inline GetInverseScaleSigmaSquares(){
+            return mvInvLevelSigma2;
+        }
 
-    int nfeatures;
-    double scaleFactor;
-    int nlevels;
-    int iniThFAST;
-    int minThFAST;
+        std::vector<cv::Mat> mvImagePyramid;
 
-    std::vector<int> mnFeaturesPerLevel;
+    protected:
 
-    std::vector<int> umax;
+        void ComputePyramid(cv::Mat image);
+        void ComputeKeyPointsOctTree(std::vector<std::vector<OrbKeyPoint> >& allKeypoints);
+        std::vector<OrbKeyPoint> DistributeOctTree(const std::vector<OrbKeyPoint> vToDistributeKeys, const int &minX,
+                                                   const int &maxX, const int &minY, const int &maxY, const int &nFeatures, const int &level);
 
-    std::vector<float> mvScaleFactor;
-    std::vector<float> mvInvScaleFactor;    
-    std::vector<float> mvLevelSigma2;
-    std::vector<float> mvInvLevelSigma2;
-};
+        void ComputeKeyPointsOld(std::vector<std::vector<cv::KeyPoint> >& allKeypoints);
+        std::vector<cv::Point> pattern;
+
+        int nfeatures;
+        double scaleFactor;
+        int nlevels;
+        int iniThFAST;
+        int minThFAST;
+
+        std::vector<int> mnFeaturesPerLevel;
+
+        std::vector<int> umax;
+
+        std::vector<float> mvScaleFactor;
+        std::vector<float> mvInvScaleFactor;
+        std::vector<float> mvLevelSigma2;
+        std::vector<float> mvInvLevelSigma2;
+
+
+        uint8_t n_ = 12;
+
+        float maxScaleFactor;
+        int allocatedSize;
+        int allocatedInputSize;
+
+        int rows;
+        int cols;
+        int imageStep;
+
+        cudaStream_t cudaStream;
+        cudaStream_t cudaStreamCpy;
+        cudaStream_t cudaStreamBlur;
+        cudaEvent_t resizeComplete;
+        cudaEvent_t blurComplete;
+        cudaEvent_t interComplete;
+        cudaEvent_t filterKernelComplete;
+
+        copyPyrimid_t copyPyrimidData;
+
+        int *umax_gpu;
+
+        uint8_t *d_R;
+        uint8_t *d_R_low;
+
+        GpuPoint *corner_buffer;
+        uint *corner_size;
+
+        GpuPoint *d_corner_buffer;
+        GpuPoint *d_corner_buffer2;
+        uint *d_corner_size;
+
+        int *d_score;
+        // int *score;
+
+        int *features;
+
+        int2 *d_centroids;
+        int *d_clust_sizes;
+
+        int2 *initial_centroids;
+        int2 *centroids;
+
+        int *d_points;
+        cv::Point *d_pattern;
+
+        float *kernel;
+
+        //piramidi
+        uchar *d_images;
+        uchar *d_inputImage;
+        uchar *d_imagesBlured;
+        uchar *d_inputImageBlured;
+        uchar *outputImages;
+        float *d_scaleFactor;
+
+    private:
+        void freeMemory();
+        void freeInputMemory();
+        void checkAndReallocMemory(cv::Mat);
+        void allocMemory(int, int, int);
+        void allocInputMemory(int, int, int);
+
+
+    };
 
 } //namespace ORB_SLAM
 
