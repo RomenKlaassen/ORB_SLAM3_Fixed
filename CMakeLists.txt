@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 2.8)
-project(ORB_SLAM3)
+project(ORB_SLAM3 LANGUAGES CUDA CXX)
 
 IF(NOT CMAKE_BUILD_TYPE)
-    SET(CMAKE_BUILD_TYPE Release)
+  SET(CMAKE_BUILD_TYPE Release)
 ENDIF()
 
 MESSAGE("Build type: " ${CMAKE_BUILD_TYPE})
@@ -53,6 +53,7 @@ include_directories(
         ${PROJECT_SOURCE_DIR}/Thirdparty/Sophus
         ${EIGEN3_INCLUDE_DIR}
         ${Pangolin_INCLUDE_DIRS}
+        ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES}
 )
 
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/lib)
@@ -63,6 +64,12 @@ src/Tracking.cc
 src/LocalMapping.cc
 src/LoopClosing.cc
 src/ORBextractor.cc
+src/fast.cu
+src/orientation.cu
+src/resize.cu
+src/gaussian_blur.cu
+src/descriptor.cu
+src/k_means.cu
 src/ORBmatcher.cc
 src/FrameDrawer.cc
 src/Converter.cc
@@ -91,6 +98,12 @@ include/Tracking.h
 include/LocalMapping.h
 include/LoopClosing.h
 include/ORBextractor.h
+include/fast.h
+include/orientation.h
+include/resize.h
+include/gaussian_blur.h
+include/descriptor.h
+include/k_means.h
 include/ORBmatcher.h
 include/FrameDrawer.h
 include/Converter.h
@@ -117,6 +130,13 @@ include/SerializationUtils.h
 include/Config.h
 include/Settings.h)
 
+
+set_target_properties( ${PROJECT_NAME}
+                       PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
+# target_compile_options(${PROJECT_NAME} PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:
+# -Xcompiler -rdynamic -lineinfo
+# >)
+
 add_subdirectory(Thirdparty/g2o)
 
 target_link_libraries(${PROJECT_NAME}
@@ -125,18 +145,27 @@ ${EIGEN3_LIBS}
 ${Pangolin_LIBRARIES}
 ${PROJECT_SOURCE_DIR}/Thirdparty/DBoW2/lib/libDBoW2.so
 ${PROJECT_SOURCE_DIR}/Thirdparty/g2o/lib/libg2o.so
+${OpenMP_CXX_FLAGS}
 -lboost_serialization
 -lcrypto
 )
 
-## If RealSense SDK is found the library is added and its examples compiled
+
+# OpenCV < 3 uses a different library for image i/o
+if(OpenCV_VERSION VERSION_LESS 3)
+        target_link_libraries(${PROJECT_NAME} opencv_highgui)
+else()
+        target_link_libraries(${PROJECT_NAME} opencv_imgcodecs)
+endif()
+
+# If RealSense SDK is found the library is added and its examples compiled
 if(realsense2_FOUND)
-   include_directories(${PROJECT_NAME}
-   ${realsense_INCLUDE_DIR}
-   )
-   target_link_libraries(${PROJECT_NAME}
-   ${realsense2_LIBRARY}
-   )
+    include_directories(${PROJECT_NAME}
+    ${realsense_INCLUDE_DIR}
+    )
+    target_link_libraries(${PROJECT_NAME}
+    ${realsense2_LIBRARY}
+    )
 endif()
 
 
@@ -163,13 +192,14 @@ if(realsense2_FOUND)
    add_executable(rgbd_inertial_realsense_D435i
            Examples/RGB-D-Inertial/rgbd_inertial_realsense_D435i.cc)
    target_link_libraries(rgbd_inertial_realsense_D435i ${PROJECT_NAME})
-
+   
    add_executable(rgbd_inertial_realsense_D455
            Examples/RGB-D-Inertial/rgbd_inertial_realsense_D455.cc)
    target_link_libraries(rgbd_inertial_realsense_D455 ${PROJECT_NAME})
 
    target_link_libraries(rgbd_inertial_realsense_D455 yaml-cpp)
    
+
 endif()
 
 #Stereo examples
