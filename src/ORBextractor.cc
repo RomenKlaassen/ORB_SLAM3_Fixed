@@ -59,49 +59,33 @@
 #include <vector>
 #include <iostream>
 
-#include "ORBextractor.h"
+#include <cuda.h>
+#include <cuda_runtime.h>
 
+#include <vpi/OpenCVInterop.hpp>
+#include <vpi/Image.h>
+#include <vpi/Stream.h>
+#include <vpi/Pyramid.h>
+#include <vpi/algo/GaussianPyramid.h>
+#include <vpi/algo/Rescale.h>
+
+#include<cuda_profiler_api.h>
+
+
+#include "fast.h"
+#include "orientation.h"
+#include "resize.h"
+#include "gaussian_blur.h"
+#include "descriptor.h"
+#include "k_means.h"
+
+#include "ORBextractor.h"
 
 using namespace cv;
 using namespace std;
 
 namespace ORB_SLAM3
 {
-
-    const int PATCH_SIZE = 31;
-    const int HALF_PATCH_SIZE = 15;
-    const int EDGE_THRESHOLD = 19;
-
-
-    static float IC_Angle(const Mat& image, Point2f pt,  const vector<int> & u_max)
-    {
-        int m_01 = 0, m_10 = 0;
-
-        const uchar* center = &image.at<uchar> (cvRound(pt.y), cvRound(pt.x));
-
-        // Treat the center line differently, v=0
-        for (int u = -HALF_PATCH_SIZE; u <= HALF_PATCH_SIZE; ++u)
-            m_10 += u * center[u];
-
-        // Go line by line in the circuI853lar patch
-        int step = (int)image.step1();
-        for (int v = 1; v <= HALF_PATCH_SIZE; ++v)
-        {
-            // Proceed over the two lines
-            int v_sum = 0;
-            int d = u_max[v];
-            for (int u = -d; u <= d; ++u)
-            {
-                int val_plus = center[u + v*step], val_minus = center[u - v*step];
-                v_sum += (val_plus - val_minus);
-                m_10 += u * (val_plus + val_minus);
-            }
-            m_01 += v * v_sum;
-        }
-
-        return fastAtan2((float)m_01, (float)m_10);
-    }
-
 
     const float factorPI = (float)(CV_PI/180.f);
     static void computeOrbDescriptor(const KeyPoint& kpt,
@@ -143,6 +127,61 @@ namespace ORB_SLAM3
         }
 
 #undef GET_VALUE
+    }
+
+    void copyPyramid(void *data_) {
+        copyPyrimid_t *data = (copyPyrimid_t *)data_;
+        for (int level = 1; level < (data->nlevels); ++level) {
+            uchar *imageLevel = &(data->outputImages[level*(data->cols)*(data->rows)]);
+            float scale = data->mvScaleFactor[level];
+            int new_rows = round(data->rows * 1/scale);
+            int new_cols = round(data->cols * 1/scale);
+            cv::Mat cvImageLevel(new_rows, new_cols, CV_8UC1, imageLevel, sizeof(uchar)*new_cols);
+            data->mvImagePyramid[level] = cvImageLevel;
+        }
+    }
+
+    void generateGaussian(float K[]) {
+        const double stdev = SIGMA;
+        const double pi = CV_PI;
+        const double constant = 1.0 / (2.0 * pi * stdev);
+
+        for (int h = -KH/2; h<=KH/2; h++)
+            for (int w = -KW/2; w<=KW/2; w++)
+                K[(h + KH/2) * KW + (w + KW/2)] = constant * (1 / exp((pow(h, 2) + pow(w, 2)) / (2 * stdev)));
+    }
+
+    void computeCentroids(int &f, int rows, int cols, int2 *centroids){
+        const int new_f = ceil(f / 4.0) * 4;
+        const float l = sqrt(new_f);
+        const int l_o = ceil(l);
+        const int l_v  = floor(l);
+
+        const int minBorderX = EDGE_THRESHOLD-3;
+        const int minBorderY = minBorderX;
+        const int maxBorderX = cols-EDGE_THRESHOLD+3;
+        const int maxBorderY = rows-EDGE_THRESHOLD+3;
+
+        const int h = maxBorderY - minBorderY;
+        const int w = maxBorderX - minBorderX;
+
+        const float offset_x = (float)w / l_o;
+        const float offset_y = (float)h / l_v;
+
+
+        int ic = 0;
+        for (int i=0; i<l_o; i++){
+            for (int j=0; j<l_v; j++){
+                const float x1 = minBorderX+(i+1)*offset_x;
+                const float y1 = minBorderY+(j+1)*offset_y;
+                const int cx = round(x1 - offset_x/2);
+                const int cy = round(y1 - offset_y/2);
+                const int2 c = make_int2(cx, cy);
+                centroids[ic] = c;
+                ic++;
+            }
+        }
+        f = ic;
     }
 
 
@@ -415,11 +454,49 @@ namespace ORB_SLAM3
         mvLevelSigma2.resize(nlevels);
         mvScaleFactor[0]=1.0f;
         mvLevelSigma2[0]=1.0f;
+        maxScaleFactor = 0;
         for(int i=1; i<nlevels; i++)
         {
-            mvScaleFactor[i]=mvScaleFactor[i-1]*scaleFactor;
+            float _scaleFactor = mvScaleFactor[i-1]*scaleFactor;
+            if (maxScaleFactor < _scaleFactor) {
+                maxScaleFactor = _scaleFactor;
+            }
+            mvScaleFactor[i]= _scaleFactor;
             mvLevelSigma2[i]=mvScaleFactor[i]*mvScaleFactor[i];
         }
+        if (scaleFactor >= 1){
+            maxScaleFactor = 1;
+        } else {
+            maxScaleFactor = 1/maxScaleFactor;
+        }
+
+        int points[32] = {0,  3,  1,  3, 2,  2, 3,  1, 3, 0, 3, -1, 2, -2, 1, -3,
+                          0, -3, -1, -3, -2, -2, -3, -1, -3, 0, -3,  1, -2,  2, -1,  3};
+
+        int cuda_device = 0;
+        cudaDeviceProp deviceProps;
+        cudaGetDeviceProperties(&deviceProps, cuda_device);
+
+        cudaStreamCreateWithPriority(&cudaStream, cudaStreamNonBlocking, 0);
+        cudaStreamCreateWithPriority(&cudaStreamCpy, cudaStreamNonBlocking, 2);
+        cudaStreamCreateWithPriority(&cudaStreamBlur, cudaStreamNonBlocking, 1);
+        cudaEventCreateWithFlags(&resizeComplete, cudaEventDisableTiming);
+        cudaEventCreateWithFlags(&blurComplete, cudaEventDisableTiming);
+        cudaEventCreateWithFlags(&interComplete, cudaEventDisableTiming);
+        cudaEventCreateWithFlags(&filterKernelComplete, cudaEventDisableTiming);
+
+        // set_half_patch_size(HALF_PATCH_SIZE, cudaStream);
+
+        cudaMalloc(&d_scaleFactor, sizeof(float)*mvScaleFactor.size());
+        cudaMemcpy(d_scaleFactor, mvScaleFactor.data(), sizeof(float)*mvScaleFactor.size(), cudaMemcpyHostToDevice);
+        cudaMalloc(&d_points, 32*sizeof(int));
+        cudaMemcpyAsync(d_points, points, 32*sizeof(int), cudaMemcpyHostToDevice, cudaStream);
+        cudaMalloc(&d_corner_size, sizeof(uint)*nlevels);
+
+        float k[KW*KH];
+        generateGaussian(k);
+        cudaMalloc(&(kernel), sizeof(float)*KW*KH);
+        cudaMemcpy(kernel, k, sizeof(float)*KW*KH, cudaMemcpyHostToDevice);
 
         mvInvScaleFactor.resize(nlevels);
         mvInvLevelSigma2.resize(nlevels);
@@ -444,9 +521,15 @@ namespace ORB_SLAM3
         }
         mnFeaturesPerLevel[nlevels-1] = std::max(nfeatures - sumFeatures, 0);
 
+        allocMemory(INIT_IMAGE_W, INIT_IMAGE_H, INIT_IMAGE_W);
+        allocInputMemory(INIT_IMAGE_W, INIT_IMAGE_H, INIT_IMAGE_W);
+
+        cudaMemcpy(this->features, mnFeaturesPerLevel.data(), sizeof(int)*mnFeaturesPerLevel.size(), cudaMemcpyHostToDevice);
         const int npoints = 512;
         const Point* pattern0 = (const Point*)bit_pattern_31_;
         std::copy(pattern0, pattern0 + npoints, std::back_inserter(pattern));
+        cudaMalloc(&(d_pattern), sizeof(cv::Point)*pattern.size());
+        cudaMemcpy(d_pattern, pattern.data(), sizeof(cv::Point)*pattern.size(), cudaMemcpyHostToDevice);
 
         //This is for orientation
         // pre-compute the end of a row in a circular patch
@@ -466,15 +549,9 @@ namespace ORB_SLAM3
             umax[v] = v0;
             ++v0;
         }
-    }
 
-    static void computeOrientation(const Mat& image, vector<KeyPoint>& keypoints, const vector<int>& umax)
-    {
-        for (vector<KeyPoint>::iterator keypoint = keypoints.begin(),
-                     keypointEnd = keypoints.end(); keypoint != keypointEnd; ++keypoint)
-        {
-            keypoint->angle = IC_Angle(image, keypoint->pt, umax);
-        }
+        cudaMalloc(&umax_gpu, sizeof(int)*umax.size());
+        cudaMemcpyAsync(umax_gpu, umax.data(), sizeof(int)*umax.size(), cudaMemcpyHostToDevice, cudaStream);
     }
 
     void ExtractorNode::DivideNode(ExtractorNode &n1, ExtractorNode &n2, ExtractorNode &n3, ExtractorNode &n4)
@@ -510,15 +587,15 @@ namespace ORB_SLAM3
         //Associate points to childs
         for(size_t i=0;i<vKeys.size();i++)
         {
-            const cv::KeyPoint &kp = vKeys[i];
-            if(kp.pt.x<n1.UR.x)
+            const OrbKeyPoint &kp = vKeys[i];
+            if(kp.point.pt.x<n1.UR.x)
             {
-                if(kp.pt.y<n1.BR.y)
+                if(kp.point.pt.y<n1.BR.y)
                     n1.vKeys.push_back(kp);
                 else
                     n3.vKeys.push_back(kp);
             }
-            else if(kp.pt.y<n1.BR.y)
+            else if(kp.point.pt.y<n1.BR.y)
                 n2.vKeys.push_back(kp);
             else
                 n4.vKeys.push_back(kp);
@@ -552,12 +629,11 @@ namespace ORB_SLAM3
         }
     }
 
-    vector<cv::KeyPoint> ORBextractor::DistributeOctTree(const vector<cv::KeyPoint>& vToDistributeKeys, const int &minX,
-                                                         const int &maxX, const int &minY, const int &maxY, const int &N, const int &level)
+    vector<OrbKeyPoint> ORBextractor::DistributeOctTree(const std::vector<OrbKeyPoint> vToDistributeKeys, const int &minX,
+                                                        const int &maxX, const int &minY, const int &maxY, const int &N, const int &level)
     {
         // Compute how many initial nodes
         const int nIni = round(static_cast<float>(maxX-minX)/(maxY-minY));
-
         const float hX = static_cast<float>(maxX-minX)/nIni;
 
         list<ExtractorNode> lNodes;
@@ -581,8 +657,8 @@ namespace ORB_SLAM3
         //Associate points to childs
         for(size_t i=0;i<vToDistributeKeys.size();i++)
         {
-            const cv::KeyPoint &kp = vToDistributeKeys[i];
-            vpIniNodes[kp.pt.x/hX]->vKeys.push_back(kp);
+            const OrbKeyPoint &kp = vToDistributeKeys[i];
+            vpIniNodes[kp.point.pt.x/hX]->vKeys.push_back(kp);
         }
 
         list<ExtractorNode>::iterator lit = lNodes.begin();
@@ -691,7 +767,6 @@ namespace ORB_SLAM3
 
                 while(!bFinish)
                 {
-
                     prevSize = lNodes.size();
 
                     vector<pair<int,ExtractorNode*> > vPrevSizeAndPointerToNode = vSizeAndPointerToNode;
@@ -747,28 +822,30 @@ namespace ORB_SLAM3
                             break;
                     }
 
-                    if((int)lNodes.size()>=N || (int)lNodes.size()==prevSize)
+                    if((int)lNodes.size()>=N || (int)lNodes.size()==prevSize){
                         bFinish = true;
+                    }
+
 
                 }
             }
         }
 
         // Retain the best point in each node
-        vector<cv::KeyPoint> vResultKeys;
+        vector<OrbKeyPoint> vResultKeys;
         vResultKeys.reserve(nfeatures);
         for(list<ExtractorNode>::iterator lit=lNodes.begin(); lit!=lNodes.end(); lit++)
         {
-            vector<cv::KeyPoint> &vNodeKeys = lit->vKeys;
-            cv::KeyPoint* pKP = &vNodeKeys[0];
-            float maxResponse = pKP->response;
+            vector<OrbKeyPoint> &vNodeKeys = lit->vKeys;
+            OrbKeyPoint* pKP = &vNodeKeys[0];
+            float maxResponse = pKP->point.response;
 
             for(size_t k=1;k<vNodeKeys.size();k++)
             {
-                if(vNodeKeys[k].response>maxResponse)
+                if(vNodeKeys[k].point.response>maxResponse)
                 {
                     pKP = &vNodeKeys[k];
-                    maxResponse = vNodeKeys[k].response;
+                    maxResponse = vNodeKeys[k].point.response;
                 }
             }
 
@@ -778,300 +855,51 @@ namespace ORB_SLAM3
         return vResultKeys;
     }
 
-    void ORBextractor::ComputeKeyPointsOctTree(vector<vector<KeyPoint> >& allKeypoints)
+    void ORBextractor::ComputeKeyPointsOctTree(vector<vector<OrbKeyPoint> >& allKeypoints)
     {
         allKeypoints.resize(nlevels);
 
-        const float W = 35;
+        fast_extract(d_images, d_inputImage, iniThFAST, minThFAST, d_R, d_R_low, d_points, n_, d_corner_buffer, d_corner_size, cols, rows, imageStep, d_scaleFactor, nlevels, cudaStream, interComplete, this->mvImagePyramid[0]);
+        filter_points(this->d_corner_buffer, this->d_corner_buffer2, this->d_centroids, this->d_clust_sizes, this->d_corner_size, this->features, this->initial_centroids, this->mnFeaturesPerLevel.data(), this->nlevels, cols*rows, this->nfeatures, this->cudaStream);
+        compute_orientation(d_images, d_inputImage, d_corner_buffer, d_corner_size, this->mnFeaturesPerLevel[0], this->umax_gpu, imageStep, nlevels, cols, rows, d_scaleFactor, cudaStream);
+        cudaStreamWaitEvent(cudaStream, blurComplete, 0);
+        compute_descriptor(d_imagesBlured, d_inputImageBlured, d_corner_buffer, d_corner_size, this->mnFeaturesPerLevel[0], d_pattern, imageStep, nlevels, cols, rows, d_scaleFactor, cudaStream);
+
+        for (int level = 0; level < nlevels; ++level){
+            uint size = this->mnFeaturesPerLevel[level];
+            ORB_SLAM3::GpuPoint *corner_buffer = &(this->corner_buffer[level*rows*cols]);
+            ORB_SLAM3::GpuPoint *d_corner_buffer = &(this->d_corner_buffer[level*rows*cols]);
+            cudaMemcpyAsync(corner_buffer, d_corner_buffer, sizeof(GpuPoint)*size, cudaMemcpyDeviceToHost, cudaStream);
+        }
+        cudaStreamSynchronize(cudaStream);
 
         for (int level = 0; level < nlevels; ++level)
         {
-            const int minBorderX = EDGE_THRESHOLD-3;
-            const int minBorderY = minBorderX;
-            const int maxBorderX = mvImagePyramid[level].cols-EDGE_THRESHOLD+3;
-            const int maxBorderY = mvImagePyramid[level].rows-EDGE_THRESHOLD+3;
+            vector<cv::KeyPoint> vToDistributeKeys2;
+            vToDistributeKeys2.reserve(nfeatures*10);
 
-            vector<cv::KeyPoint> vToDistributeKeys;
-            vToDistributeKeys.reserve(nfeatures*10);
+            uint size = this->mnFeaturesPerLevel[level];
+            ORB_SLAM3::GpuPoint *corner_buffer = &(this->corner_buffer[level*rows*cols]);
 
-            const float width = (maxBorderX-minBorderX);
-            const float height = (maxBorderY-minBorderY);
-
-            const int nCols = width/W;
-            const int nRows = height/W;
-            const int wCell = ceil(width/nCols);
-            const int hCell = ceil(height/nRows);
-
-            for(int i=0; i<nRows; i++)
+            vector<OrbKeyPoint> & keypoints = allKeypoints[level];
+            keypoints.reserve(nfeatures*10);
+            for(uint i=0; i<size; i++)
             {
-                const float iniY =minBorderY+i*hCell;
-                float maxY = iniY+hCell+6;
+                const float x = corner_buffer[i].x;
+                const float y = corner_buffer[i].y;
+                const float score = corner_buffer[i].score;
+                const float size = corner_buffer[i].size;
+                const float angle = corner_buffer[i].angle;
+                const int octave = corner_buffer[i].octave;
+                OrbKeyPoint orbKeypoint;
+                orbKeypoint.point = cv::KeyPoint(x, y, size, angle, score, octave);
+                orbKeypoint.descriptor = corner_buffer[i].descriptor;
+                int c_offset = this->nfeatures*level;
+                vToDistributeKeys2.push_back(cv::KeyPoint(x, y, size, angle, score, octave));
 
-                if(iniY>=maxBorderY-3)
-                    continue;
-                if(maxY>maxBorderY)
-                    maxY = maxBorderY;
-
-                for(int j=0; j<nCols; j++)
-                {
-                    const float iniX =minBorderX+j*wCell;
-                    float maxX = iniX+wCell+6;
-                    if(iniX>=maxBorderX-6)
-                        continue;
-                    if(maxX>maxBorderX)
-                        maxX = maxBorderX;
-
-                    vector<cv::KeyPoint> vKeysCell;
-
-                    FAST(mvImagePyramid[level].rowRange(iniY,maxY).colRange(iniX,maxX),
-                         vKeysCell,iniThFAST,true);
-
-                    /*if(bRight && j <= 13){
-                        FAST(mvImagePyramid[level].rowRange(iniY,maxY).colRange(iniX,maxX),
-                             vKeysCell,10,true);
-                    }
-                    else if(!bRight && j >= 16){
-                        FAST(mvImagePyramid[level].rowRange(iniY,maxY).colRange(iniX,maxX),
-                             vKeysCell,10,true);
-                    }
-                    else{
-                        FAST(mvImagePyramid[level].rowRange(iniY,maxY).colRange(iniX,maxX),
-                             vKeysCell,iniThFAST,true);
-                    }*/
-
-
-                    if(vKeysCell.empty())
-                    {
-                        FAST(mvImagePyramid[level].rowRange(iniY,maxY).colRange(iniX,maxX),
-                             vKeysCell,minThFAST,true);
-                        /*if(bRight && j <= 13){
-                            FAST(mvImagePyramid[level].rowRange(iniY,maxY).colRange(iniX,maxX),
-                                 vKeysCell,5,true);
-                        }
-                        else if(!bRight && j >= 16){
-                            FAST(mvImagePyramid[level].rowRange(iniY,maxY).colRange(iniX,maxX),
-                                 vKeysCell,5,true);
-                        }
-                        else{
-                            FAST(mvImagePyramid[level].rowRange(iniY,maxY).colRange(iniX,maxX),
-                                 vKeysCell,minThFAST,true);
-                        }*/
-                    }
-
-                    if(!vKeysCell.empty())
-                    {
-                        for(vector<cv::KeyPoint>::iterator vit=vKeysCell.begin(); vit!=vKeysCell.end();vit++)
-                        {
-                            (*vit).pt.x+=j*wCell;
-                            (*vit).pt.y+=i*hCell;
-                            vToDistributeKeys.push_back(*vit);
-                        }
-                    }
-
-                }
-            }
-
-            vector<KeyPoint> & keypoints = allKeypoints[level];
-            keypoints.reserve(nfeatures);
-
-            keypoints = DistributeOctTree(vToDistributeKeys, minBorderX, maxBorderX,
-                                          minBorderY, maxBorderY,mnFeaturesPerLevel[level], level);
-
-            const int scaledPatchSize = PATCH_SIZE*mvScaleFactor[level];
-
-            // Add border to coordinates and scale information
-            const int nkps = keypoints.size();
-            for(int i=0; i<nkps ; i++)
-            {
-                keypoints[i].pt.x+=minBorderX;
-                keypoints[i].pt.y+=minBorderY;
-                keypoints[i].octave=level;
-                keypoints[i].size = scaledPatchSize;
+                keypoints.push_back(orbKeypoint);
             }
         }
-
-        // compute orientations
-        for (int level = 0; level < nlevels; ++level)
-            computeOrientation(mvImagePyramid[level], allKeypoints[level], umax);
-    }
-
-    void ORBextractor::ComputeKeyPointsOld(std::vector<std::vector<KeyPoint> > &allKeypoints)
-    {
-        allKeypoints.resize(nlevels);
-
-        float imageRatio = (float)mvImagePyramid[0].cols/mvImagePyramid[0].rows;
-
-        for (int level = 0; level < nlevels; ++level)
-        {
-            const int nDesiredFeatures = mnFeaturesPerLevel[level];
-
-            const int levelCols = sqrt((float)nDesiredFeatures/(5*imageRatio));
-            const int levelRows = imageRatio*levelCols;
-
-            const int minBorderX = EDGE_THRESHOLD;
-            const int minBorderY = minBorderX;
-            const int maxBorderX = mvImagePyramid[level].cols-EDGE_THRESHOLD;
-            const int maxBorderY = mvImagePyramid[level].rows-EDGE_THRESHOLD;
-
-            const int W = maxBorderX - minBorderX;
-            const int H = maxBorderY - minBorderY;
-            const int cellW = ceil((float)W/levelCols);
-            const int cellH = ceil((float)H/levelRows);
-
-            const int nCells = levelRows*levelCols;
-            const int nfeaturesCell = ceil((float)nDesiredFeatures/nCells);
-
-            vector<vector<vector<KeyPoint> > > cellKeyPoints(levelRows, vector<vector<KeyPoint> >(levelCols));
-
-            vector<vector<int> > nToRetain(levelRows,vector<int>(levelCols,0));
-            vector<vector<int> > nTotal(levelRows,vector<int>(levelCols,0));
-            vector<vector<bool> > bNoMore(levelRows,vector<bool>(levelCols,false));
-            vector<int> iniXCol(levelCols);
-            vector<int> iniYRow(levelRows);
-            int nNoMore = 0;
-            int nToDistribute = 0;
-
-
-            float hY = cellH + 6;
-
-            for(int i=0; i<levelRows; i++)
-            {
-                const float iniY = minBorderY + i*cellH - 3;
-                iniYRow[i] = iniY;
-
-                if(i == levelRows-1)
-                {
-                    hY = maxBorderY+3-iniY;
-                    if(hY<=0)
-                        continue;
-                }
-
-                float hX = cellW + 6;
-
-                for(int j=0; j<levelCols; j++)
-                {
-                    float iniX;
-
-                    if(i==0)
-                    {
-                        iniX = minBorderX + j*cellW - 3;
-                        iniXCol[j] = iniX;
-                    }
-                    else
-                    {
-                        iniX = iniXCol[j];
-                    }
-
-
-                    if(j == levelCols-1)
-                    {
-                        hX = maxBorderX+3-iniX;
-                        if(hX<=0)
-                            continue;
-                    }
-
-
-                    Mat cellImage = mvImagePyramid[level].rowRange(iniY,iniY+hY).colRange(iniX,iniX+hX);
-
-                    cellKeyPoints[i][j].reserve(nfeaturesCell*5);
-
-                    FAST(cellImage,cellKeyPoints[i][j],iniThFAST,true);
-
-                    if(cellKeyPoints[i][j].size()<=3)
-                    {
-                        cellKeyPoints[i][j].clear();
-
-                        FAST(cellImage,cellKeyPoints[i][j],minThFAST,true);
-                    }
-
-
-                    const int nKeys = cellKeyPoints[i][j].size();
-                    nTotal[i][j] = nKeys;
-
-                    if(nKeys>nfeaturesCell)
-                    {
-                        nToRetain[i][j] = nfeaturesCell;
-                        bNoMore[i][j] = false;
-                    }
-                    else
-                    {
-                        nToRetain[i][j] = nKeys;
-                        nToDistribute += nfeaturesCell-nKeys;
-                        bNoMore[i][j] = true;
-                        nNoMore++;
-                    }
-
-                }
-            }
-
-
-            // Retain by score
-
-            while(nToDistribute>0 && nNoMore<nCells)
-            {
-                int nNewFeaturesCell = nfeaturesCell + ceil((float)nToDistribute/(nCells-nNoMore));
-                nToDistribute = 0;
-
-                for(int i=0; i<levelRows; i++)
-                {
-                    for(int j=0; j<levelCols; j++)
-                    {
-                        if(!bNoMore[i][j])
-                        {
-                            if(nTotal[i][j]>nNewFeaturesCell)
-                            {
-                                nToRetain[i][j] = nNewFeaturesCell;
-                                bNoMore[i][j] = false;
-                            }
-                            else
-                            {
-                                nToRetain[i][j] = nTotal[i][j];
-                                nToDistribute += nNewFeaturesCell-nTotal[i][j];
-                                bNoMore[i][j] = true;
-                                nNoMore++;
-                            }
-                        }
-                    }
-                }
-            }
-
-            vector<KeyPoint> & keypoints = allKeypoints[level];
-            keypoints.reserve(nDesiredFeatures*2);
-
-            const int scaledPatchSize = PATCH_SIZE*mvScaleFactor[level];
-
-            // Retain by score and transform coordinates
-            for(int i=0; i<levelRows; i++)
-            {
-                for(int j=0; j<levelCols; j++)
-                {
-                    vector<KeyPoint> &keysCell = cellKeyPoints[i][j];
-                    KeyPointsFilter::retainBest(keysCell,nToRetain[i][j]);
-                    if((int)keysCell.size()>nToRetain[i][j])
-                        keysCell.resize(nToRetain[i][j]);
-
-
-                    for(size_t k=0, kend=keysCell.size(); k<kend; k++)
-                    {
-                        keysCell[k].pt.x+=iniXCol[j];
-                        keysCell[k].pt.y+=iniYRow[i];
-                        keysCell[k].octave=level;
-                        keysCell[k].size = scaledPatchSize;
-                        keypoints.push_back(keysCell[k]);
-                    }
-                }
-            }
-
-            if((int)keypoints.size()>nDesiredFeatures)
-            {
-                KeyPointsFilter::retainBest(keypoints,nDesiredFeatures);
-                keypoints.resize(nDesiredFeatures);
-            }
-        }
-
-        // and compute orientations
-        for (int level = 0; level < nlevels; ++level)
-            computeOrientation(mvImagePyramid[level], allKeypoints[level], umax);
     }
 
     static void computeDescriptors(const Mat& image, vector<KeyPoint>& keypoints, Mat& descriptors,
@@ -1083,9 +911,88 @@ namespace ORB_SLAM3
             computeOrbDescriptor(keypoints[i], image, &pattern[0], descriptors.ptr((int)i));
     }
 
+    void ORBextractor::freeMemory() {
+        cudaFree(this->d_R);
+
+        cudaFree(this->d_corner_buffer);
+        cudaFree(this->d_corner_buffer2);
+        cudaFreeHost(this->corner_buffer);
+
+        cudaFree(this->d_centroids);
+        cudaFree(this->d_clust_sizes);
+        cudaFree(this->initial_centroids);
+
+        cudaFree(d_images);
+        cudaFree(d_imagesBlured);
+        cudaFreeHost(outputImages);
+
+        this->allocatedSize = 0;
+    }
+
+    void ORBextractor::freeInputMemory() {
+        cudaFree(d_inputImage);
+        cudaFree(d_inputImageBlured);
+        this->allocatedInputSize = 0;
+    }
+
+    void ORBextractor::allocMemory(int w, int h, int imageStep) {
+        cudaMalloc(&(this->d_R), sizeof(uint8_t)*w*h*this->nlevels);
+
+        cudaMalloc(&(this->d_corner_buffer), sizeof(GpuPoint)*w*h*this->nlevels);
+        cudaMalloc(&(this->d_corner_buffer2), sizeof(GpuPoint)*w*h*this->nlevels);
+        cudaMallocHost(&(this->corner_buffer), sizeof(GpuPoint)*w*h*this->nlevels);
+
+        cudaMalloc(&(this->features), sizeof(int)*this->nlevels);
+
+        cudaMalloc(&d_images, sizeof(uchar)*w*h*nlevels);
+        cudaMalloc(&d_imagesBlured, sizeof(uchar)*w*h*nlevels);
+        cudaMallocHost(&outputImages, sizeof(uchar)*w*h*nlevels);
+
+        cudaMalloc(&(this->d_centroids), sizeof(int2)*nlevels*nfeatures);
+        cudaMalloc(&(this->d_clust_sizes), sizeof(int)*nlevels*nfeatures);
+
+        // int2 centroids[nlevels*nfeatures];
+        cudaMallocHost(&(this->centroids), sizeof(int2)*nlevels*nfeatures);
+        for (int i=0; i<nlevels; i++){
+            int &f = this->mnFeaturesPerLevel[i];
+            float scale = mvScaleFactor[i];
+            int new_rows = round(h * 1/scale);
+            int new_cols = round(w * 1/scale);
+            computeCentroids(f, new_rows, new_cols, &(centroids[i*nfeatures]));
+        }
+        cudaMalloc(&(this->initial_centroids), sizeof(int2)*nlevels*nfeatures);
+        cudaMemcpy(this->initial_centroids, centroids, sizeof(int2)*nlevels*nfeatures, cudaMemcpyHostToDevice);
+
+        cudaMemcpy(this->features, this->mnFeaturesPerLevel.data(), this->mnFeaturesPerLevel.size()*sizeof(int), cudaMemcpyHostToDevice);
+
+        this->allocatedSize = w*h;
+    }
+
+    void ORBextractor::allocInputMemory(int w, int h, int imageStep) {
+        cudaMalloc(&d_inputImage, sizeof(uchar)*h*imageStep);
+        cudaMalloc(&d_inputImageBlured, sizeof(uchar)*h*imageStep);
+
+        this->allocatedInputSize = imageStep*h;
+    }
+
+    inline void ORBextractor::checkAndReallocMemory(cv::Mat image) {
+        //compute the max scaled image
+        int new_cols = cvRound((float)image.cols*maxScaleFactor);
+        int new_rows = cvRound((float)image.rows*maxScaleFactor);
+        if (this->allocatedSize < new_cols*new_rows) {
+            this->freeMemory();
+            this->allocMemory(new_cols, new_rows, image.step[0]);
+        }
+        if (this->allocatedInputSize < new_rows*image.step[0]) {
+            this->freeInputMemory();
+            this->allocInputMemory(new_cols, new_rows, image.step[0]);
+        }
+    }
+
     int ORBextractor::operator()( InputArray _image, InputArray _mask, vector<KeyPoint>& _keypoints,
                                   OutputArray _descriptors, std::vector<int> &vLappingArea)
     {
+        cudaProfilerStart();
         //cout << "[ORBextractor]: Max Features: " << nfeatures << endl;
         if(_image.empty())
             return -1;
@@ -1093,13 +1000,25 @@ namespace ORB_SLAM3
         Mat image = _image.getMat();
         assert(image.type() == CV_8UC1 );
 
+        this-> cols = image.cols;
+        this->rows = image.rows;
+        this->imageStep = image.step[0];
+
+        this->checkAndReallocMemory(image);
+
         // Pre-compute the scale pyramid
         ComputePyramid(image);
 
-        vector < vector<KeyPoint> > allKeypoints;
+        vector < vector<OrbKeyPoint> > allKeypoints;
+        // std::chrono::steady_clock::time_point time_Start = std::chrono::steady_clock::now();
         ComputeKeyPointsOctTree(allKeypoints);
-        //ComputeKeyPointsOld(allKeypoints);
+        // std::chrono::steady_clock::time_point time_End = std::chrono::steady_clock::now();
 
+        // double time = std::chrono::duration_cast<std::chrono::duration<double,std::milli> >(time_End - time_Start).count();
+
+        // std::cout << "time: " << time << std::endl;
+
+        //ComputeKeyPointsOld(allKeypoints);
         Mat descriptors;
 
         int nkeypoints = 0;
@@ -1122,76 +1041,95 @@ namespace ORB_SLAM3
         int monoIndex = 0, stereoIndex = nkeypoints-1;
         for (int level = 0; level < nlevels; ++level)
         {
-            vector<KeyPoint>& keypoints = allKeypoints[level];
+            vector<OrbKeyPoint>& keypoints = allKeypoints[level];
             int nkeypointsLevel = (int)keypoints.size();
 
             if(nkeypointsLevel==0)
                 continue;
 
             // preprocess the resized image
-            Mat workingMat = mvImagePyramid[level].clone();
-            GaussianBlur(workingMat, workingMat, Size(7, 7), 2, 2, BORDER_REFLECT_101);
+            // Mat workingMat = mvImagePyramid[level].clone();
+            // GaussianBlur(workingMat, workingMat, Size(7, 7), 2, 2, BORDER_REFLECT_101);
 
             // Compute the descriptors
             //Mat desc = descriptors.rowRange(offset, offset + nkeypointsLevel);
-            Mat desc = cv::Mat(nkeypointsLevel, 32, CV_8U);
-            computeDescriptors(workingMat, keypoints, desc, pattern);
+            // Mat desc = cv::Mat(nkeypointsLevel, 32, CV_8U);
+            // computeDescriptors(workingMat, keypoints, desc, pattern);
 
             offset += nkeypointsLevel;
 
 
             float scale = mvScaleFactor[level]; //getScale(level, firstLevel, scaleFactor);
             int i = 0;
-            for (vector<KeyPoint>::iterator keypoint = keypoints.begin(),
+            for (vector<OrbKeyPoint>::iterator keypoint = keypoints.begin(),
                          keypointEnd = keypoints.end(); keypoint != keypointEnd; ++keypoint){
+                cv::Mat desc(1, 32, CV_8U, (*keypoint).descriptor);
 
                 // Scale keypoint coordinates
                 if (level != 0){
-                    keypoint->pt *= scale;
+                    keypoint->point.pt *= scale;
                 }
 
-                if(keypoint->pt.x >= vLappingArea[0] && keypoint->pt.x <= vLappingArea[1]){
-                    _keypoints.at(stereoIndex) = (*keypoint);
-                    desc.row(i).copyTo(descriptors.row(stereoIndex));
+                if(keypoint->point.pt.x >= vLappingArea[0] && keypoint->point.pt.x <= vLappingArea[1]){
+                    _keypoints.at(stereoIndex) = (*keypoint).point;
+                    desc.row(0).copyTo(descriptors.row(stereoIndex));
                     stereoIndex--;
                 }
                 else{
-                    _keypoints.at(monoIndex) = (*keypoint);
-                    desc.row(i).copyTo(descriptors.row(monoIndex));
+                    _keypoints.at(monoIndex) = (*keypoint).point;
+                    desc.row(0).copyTo(descriptors.row(monoIndex));
                     monoIndex++;
                 }
                 i++;
             }
         }
+
+        cudaProfilerStop();
+
         //cout << "[ORBextractor]: extracted " << _keypoints.size() << " KeyPoints" << endl;
         return monoIndex;
     }
 
     void ORBextractor::ComputePyramid(cv::Mat image)
     {
-        for (int level = 0; level < nlevels; ++level)
-        {
-            float scale = mvInvScaleFactor[level];
-            Size sz(cvRound((float)image.cols*scale), cvRound((float)image.rows*scale));
-            Size wholeSize(sz.width + EDGE_THRESHOLD*2, sz.height + EDGE_THRESHOLD*2);
-            Mat temp(wholeSize, image.type()), masktemp;
-            mvImagePyramid[level] = temp(Rect(EDGE_THRESHOLD, EDGE_THRESHOLD, sz.width, sz.height));
+        cudaMemcpyAsync(d_inputImage, image.data, sizeof(uchar)*image.rows*image.step[0], cudaMemcpyHostToDevice, cudaStream);
+        resize(image.rows, image.cols, d_scaleFactor, d_inputImage, d_images, nlevels, image.step[0], cudaStream);
+        cudaEventRecord(resizeComplete, cudaStream);
 
-            // Compute the resized image
-            if( level != 0 )
-            {
-                resize(mvImagePyramid[level-1], mvImagePyramid[level], sz, 0, 0, INTER_LINEAR);
+        //BLUR
+        cudaStreamWaitEvent(cudaStreamBlur, resizeComplete, 0);
+        gaussian_blur(d_images, d_inputImage, d_imagesBlured, d_inputImageBlured, kernel, cols, rows, imageStep, d_scaleFactor, nlevels, cudaStreamBlur);
+        cudaEventRecord(blurComplete, cudaStreamBlur);
 
-                copyMakeBorder(mvImagePyramid[level], temp, EDGE_THRESHOLD, EDGE_THRESHOLD, EDGE_THRESHOLD, EDGE_THRESHOLD,
-                               BORDER_REFLECT_101+BORDER_ISOLATED);
-            }
-            else
-            {
-                copyMakeBorder(image, temp, EDGE_THRESHOLD, EDGE_THRESHOLD, EDGE_THRESHOLD, EDGE_THRESHOLD,
-                               BORDER_REFLECT_101);
-            }
-        }
+        cudaStreamWaitEvent(cudaStreamCpy, resizeComplete, 0);
+        cudaMemcpyAsync(outputImages, d_images, sizeof(uchar)*image.cols*image.rows*nlevels, cudaMemcpyDeviceToHost, cudaStreamCpy);
+        copyPyrimidData.cols = image.cols;
+        copyPyrimidData.rows = image.rows;
+        copyPyrimidData.mvImagePyramid = mvImagePyramid.data();
+        copyPyrimidData.mvScaleFactor = mvScaleFactor.data();
+        copyPyrimidData.nlevels = nlevels;
+        copyPyrimidData.outputImages = outputImages;
+        cudaLaunchHostFunc(cudaStreamCpy, copyPyramid, &(this->copyPyrimidData));
 
+        mvImagePyramid[0] = image;
+    }
+
+    ORBextractor::~ORBextractor() {
+        this->freeMemory();
+        this->freeInputMemory();
+        cudaFree(d_scaleFactor);
+        cudaFree(this->d_points);
+        cudaFree(this->d_corner_size);
+        cudaFree(this->umax_gpu);
+        cudaFree(kernel);
+        cudaFree(d_pattern);
+        cudaStreamDestroy(cudaStream);
+        cudaStreamDestroy(cudaStreamCpy);
+        cudaStreamDestroy(cudaStreamBlur);
+        cudaEventDestroy(resizeComplete);
+        cudaEventDestroy(blurComplete);
+        cudaEventDestroy(interComplete);
+        cudaEventDestroy(filterKernelComplete);
     }
 
 } //namespace ORB_SLAM
